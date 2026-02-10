@@ -2,9 +2,6 @@ trigger:
 - main
 
 # If your project blocks this, delete the next 3 lines and use the 'Permit' button in the UI.
-permissions:
-  idToken: write
-  contents: read
 
 pool:
   vmImage: ubuntu-latest
