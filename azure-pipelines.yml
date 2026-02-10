@@ -1,21 +1,26 @@
 trigger:
 - main
 
-# If your project blocks this, delete the next 3 lines and use the 'Permit' button in the UI.
+# ROOT LEVEL PERMISSIONS
+# If this fails with "Unexpected value", delete these 3 lines and use the manual 'Permit' button.
 
 pool:
   vmImage: ubuntu-latest
 
 variables:
-  # Updated based on your new settings
+  # Connection details updated to your new names
   JF_URL: "https://hts2.jfrog.io"
   JF_OIDC_PROVIDER: "oidc"
   SC_NAME: "serviceconnect"
   OIDC_AUDIENCE: "api://AzureADTokenExchange"
+  
+  # Specific artifact path provided
+  REPO_PATH: "sharanya-oidc/1mb.zip"
+  LOCAL_FILE_NAME: "1mb.zip"
 
 steps:
 - task: Bash@3
-  displayName: "OIDC Authentication Step"
+  displayName: "Authenticate and Download 1mb.zip"
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   inputs:
@@ -24,36 +29,35 @@ steps:
       set -e
 
       echo "--- 1. Locating Service Connection ID for $(SC_NAME) ---"
-      LIST_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/serviceendpoint/endpoints?api-version=7.1-preview.1"
-      
-      # Find the internal GUID for 'serviceconnect'
-      SC_ID=$(curl -s -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$LIST_URL" | jq -r --arg NAME "$(SC_NAME)" '.value[] | select(.name == $NAME) | .id')
+      # Fetch the internal ID for 'serviceconnect'
+      SC_INFO_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/serviceendpoint/endpoints?endpointNames=$(SC_NAME)&api-version=7.1-preview.1"
+      SC_ID=$(curl -s -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$SC_INFO_URL" | jq -r '.value[0].id')
 
       if [ -z "$SC_ID" ] || [ "$SC_ID" == "null" ]; then
         echo "❌ Error: Could not find Service Connection $(SC_NAME)."
-        echo "Check if 'Limit job authorization scope' is ON in Project Settings."
+        echo "Ensure it exists in this project and check for typos."
         exit 1
       fi
 
-      echo "Found SC_ID: $SC_ID"
-
       echo "--- 2. Requesting OIDC ID Token from Azure DevOps ---"
+      # Request token specifically for the service connection ID
       TOKEN_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/distributedtask/hubs/build/plans/$(System.PlanId)/jobs/$(System.JobId)/oidctoken?serviceConnectionId=$SC_ID&api-version=7.1-preview.1"
       
-      ADO_TOKEN_JSON=$(curl -s -X POST "$TOKEN_URL" \
+      ADO_RESPONSE=$(curl -s -X POST "$TOKEN_URL" \
         -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
         -H "Content-Type: application/json" \
         -d "{\"audience\": \"$(OIDC_AUDIENCE)\"}")
 
-      ID_TOKEN=$(echo "$ADO_TOKEN_JSON" | jq -r '.oidcToken // empty')
+      ID_TOKEN=$(echo "$ADO_RESPONSE" | jq -r '.oidcToken // empty')
 
       if [ -z "$ID_TOKEN" ]; then
-        echo "❌ Token request failed. You may need to Permit the pipeline to use the service connection."
+        echo "❌ Error: Azure DevOps failed to provide an OIDC token."
         exit 1
       fi
 
-      echo "--- 3. Exchanging with JFrog Provider: $(JF_OIDC_PROVIDER) ---"
-      JF_TOKEN_JSON=$(curl -s -X POST "$(JF_URL)/access/api/v1/oidc/token" \
+      echo "--- 3. Exchanging for JFrog Access Token ---"
+      # Exchange ADO identity for JFrog access token
+      JF_RESPONSE=$(curl -s -X POST "$(JF_URL)/access/api/v1/oidc/token" \
         -H "Content-Type: application/json" \
         -d "{
           \"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
@@ -62,17 +66,20 @@ steps:
           \"provider_name\": \"$(JF_OIDC_PROVIDER)\"
         }")
 
-      ACCESS_TOKEN=$(echo "$JF_TOKEN_JSON" | jq -r '.access_token // empty')
+      JF_TOKEN=$(echo "$JF_RESPONSE" | jq -r '.access_token // empty')
 
-      if [ -z "$ACCESS_TOKEN" ]; then
-        echo "❌ JFrog exchange failed. API Response: $JF_TOKEN_JSON"
+      if [ -z "$JF_TOKEN" ]; then
+        echo "❌ JFrog exchange failed. API Response: $JF_RESPONSE"
         exit 1
       fi
 
-      echo "##vso[task.setvariable variable=JF_TOKEN;issecret=true]$ACCESS_TOKEN"
-      echo "✅ Successfully authenticated with JFrog."
+      echo "✅ Authentication Successful."
 
-- script: |
-    echo "Testing Artifactory Connection..."
-    curl -H "Authorization: Bearer $(JF_TOKEN)" "$(JF_URL)/artifactory/api/system/ping"
-  displayName: 'Verify Access'
+      echo "--- 4. Downloading Artifact via Curl ---"
+      # Download using the Bearer token in the header
+      curl -H "Authorization: Bearer $JF_TOKEN" \
+           -L "$(JF_URL)/artifactory/$(REPO_PATH)" \
+           --output "$(LOCAL_FILE_NAME)"
+
+      echo "✅ Download complete: $(LOCAL_FILE_NAME)"
+      ls -lh "$(LOCAL_FILE_NAME)"
