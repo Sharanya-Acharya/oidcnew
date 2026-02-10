@@ -6,21 +6,17 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  # Both names are now 'serviceconnect' per your request
   JF_URL: "https://hts2.jfrog.io"
   JF_OIDC_PROVIDER: "serviceconnect"
-  SC_NAME: "serviceconnect"
-  
-  # Standard OIDC audience for Artifactory exchange
-  OIDC_AUDIENCE: "api://AzureADTokenExchange"
-  
-  # Your specific artifact details
+  # Using the ID from your URL
+  SC_ID: "099c2c06-2dda-498d-b98f-53554e4a910b"
   REPO_PATH: "sharanya-oidc/1mb.zip"
   LOCAL_FILE_NAME: "1mb.zip"
+  OIDC_AUDIENCE: "api://AzureADTokenExchange"
 
 steps:
 - task: Bash@3
-  displayName: "Authenticate and Download from Artifactory"
+  displayName: "Authenticate and Download"
   env:
     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   inputs:
@@ -28,20 +24,9 @@ steps:
     script: |
       set -e
 
-      echo "--- 1. Locating Service Connection ID ---"
-      # Search for 'serviceconnect' within the current project scope
-      SC_INFO_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/serviceendpoint/endpoints?endpointNames=$(SC_NAME)&api-version=7.1-preview.1"
-      SC_ID=$(curl -s -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$SC_INFO_URL" | jq -r '.value[0].id')
-
-      if [ -z "$SC_ID" ] || [ "$SC_ID" == "null" ]; then
-        echo "❌ Error: Could not find Service Connection $(SC_NAME)."
-        echo "Please verify that you manually added this pipeline to the SC Security settings."
-        exit 1
-      fi
-
-      echo "--- 2. Requesting OIDC ID Token from Azure DevOps ---"
-      # Requesting a short-lived identity token
-      TOKEN_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/distributedtask/hubs/build/plans/$(System.PlanId)/jobs/$(System.JobId)/oidctoken?serviceConnectionId=$SC_ID&api-version=7.1-preview.1"
+      echo "--- 1. Requesting OIDC ID Token from Azure DevOps ---"
+      # Calling the token service directly using your resource ID
+      TOKEN_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/distributedtask/hubs/build/plans/$(System.PlanId)/jobs/$(System.JobId)/oidctoken?serviceConnectionId=$(SC_ID)&api-version=7.1-preview.1"
       
       ADO_RESPONSE=$(curl -s -X POST "$TOKEN_URL" \
         -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" \
@@ -50,13 +35,14 @@ steps:
 
       ID_TOKEN=$(echo "$ADO_RESPONSE" | jq -r '.oidcToken // empty')
 
-      if [ -z "$ID_TOKEN" ]; then
-        echo "❌ Error: Failed to retrieve OIDC token from Azure DevOps."
+      if [ -z "$ID_TOKEN" ] || [ "$ID_TOKEN" == "null" ]; then
+        echo "❌ Error: Azure DevOps blocked the token request."
+        echo "Go to the 'Run Summary' page NOW and click the 'Permit' button."
         exit 1
       fi
 
-      echo "--- 3. Exchanging for JFrog Access Token ---"
-      # Swapping the ADO identity token for a JFrog access token
+      echo "--- 2. Exchanging for JFrog Access Token ---"
+      # Exchange ADO identity for JFrog access
       JF_RESPONSE=$(curl -s -X POST "$(JF_URL)/access/api/v1/oidc/token" \
         -H "Content-Type: application/json" \
         -d "{
@@ -69,17 +55,15 @@ steps:
       JF_TOKEN=$(echo "$JF_RESPONSE" | jq -r '.access_token // empty')
 
       if [ -z "$JF_TOKEN" ]; then
-        echo "❌ JFrog exchange failed. API Response: $JF_RESPONSE"
+        echo "❌ JFrog exchange failed: $JF_RESPONSE"
         exit 1
       fi
 
-      echo "✅ Authentication Successful."
-
-      echo "--- 4. Downloading 1mb.zip ---"
-      # The final curl command using the Bearer token
+      echo "--- 3. Downloading 1mb.zip ---"
+      # Final curl command to download your file
       curl -H "Authorization: Bearer $JF_TOKEN" \
            -L "$(JF_URL)/artifactory/$(REPO_PATH)" \
            --output "$(LOCAL_FILE_NAME)"
-
-      echo "✅ Download finished: $(LOCAL_FILE_NAME)"
+      
+      echo "✅ Success! File downloaded."
       ls -lh "$(LOCAL_FILE_NAME)"
