@@ -1,0 +1,37 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+# 1. Exchange the token. We MUST name this task 'jfAuth'.
+- task: JfrogCliV2@1
+  name: jfAuth
+  inputs:
+    jfrogPlatformConnection: 'serviceconnection'
+    command: 'jf rt ping'
+
+# 2. Map the output variable using the task name.
+- bash: |
+    echo "Starting download..."
+    
+    # Check the length again. A real token will be 500+ characters.
+    echo "Token Length: ${#OIDC_TOKEN}"
+
+    if [ ${#OIDC_TOKEN} -lt 100 ]; then
+      echo "ERROR: Token is still not being passed correctly."
+      exit 1
+    fi
+
+    curl -fL -H "Authorization: Bearer $OIDC_TOKEN" \
+         "https://hts2.jfrog.io/artifactory/sharanya-oidc/1mb.zip" \
+         -o "1mb.zip"
+
+    echo "Download success!"
+    ls -lh 1mb.zip
+  displayName: 'OIDC Curl Download'
+  env:
+    # THIS IS THE FIX: Syntax must be $(TaskName.VariableName)
+    # The JFrog extension specifically uses 'oidc_token' as the output name.
+    OIDC_TOKEN: $(jfAuth.oidc_token)
