@@ -9,7 +9,7 @@ variables:
   JF_URL: "https://hts2.jfrog.io"
   JF_OIDC_PROVIDER: "serviceconnect"
   # Using the ID from your URL
-  SC_ID: "099c2c06-2dda-498d-b98f-53554e4a910b"
+  SC_ID: "serviceconnect"
   REPO_PATH: "sharanya-oidc/1mb.zip"
   LOCAL_FILE_NAME: "1mb.zip"
   OIDC_AUDIENCE: "api://AzureADTokenExchange"
