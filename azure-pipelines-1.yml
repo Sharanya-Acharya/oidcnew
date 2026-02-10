@@ -1,0 +1,63 @@
+trigger:
+- main
+
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # Updated with your new service connection and existing provider
+  JF_URL: "https://hts2.jfrog.io"
+  JF_OIDC_PROVIDER: "oidc"
+  SC_NAME: "oidc-new" 
+  OIDC_AUDIENCE: "api://AzureADTokenExchange"
+  
+  # The file you want to download
+  REPO_PATH: "sharanya-oidc/1mb.zip"
+  LOCAL_FILE_NAME: "1mb.zip"
+
+steps:
+- task: Bash@3
+  displayName: "Authenticate and Download"
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+
+      echo "--- 1. Locating ID for $(SC_NAME) ---"
+      # This API call will now succeed because you granted manual permission
+      SC_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/serviceendpoint/endpoints?endpointNames=$(SC_NAME)&api-version=7.1-preview.1"
+      SC_ID=$(curl -s -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$SC_URL" | jq -r '.value[0].id')
+
+      if [ -z "$SC_ID" ] || [ "$SC_ID" == "null" ]; then
+        echo "❌ Error: Pipeline still cannot see $(SC_NAME)."
+        exit 1
+      fi
+
+      echo "--- 2. Requesting OIDC ID Token ---"
+      TOKEN_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProjectId)/_apis/distributedtask/hubs/build/plans/$(System.PlanId)/jobs/$(System.JobId)/oidctoken?serviceConnectionId=$SC_ID&api-version=7.1-preview.1"
+      ADO_RESPONSE=$(curl -s -X POST "$TOKEN_URL" -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" -H "Content-Type: application/json" -d "{\"audience\": \"$(OIDC_AUDIENCE)\"}")
+      ID_TOKEN=$(echo "$ADO_RESPONSE" | jq -r '.oidcToken')
+
+      echo "--- 3. Exchanging for JFrog Token ---"
+      JF_RESPONSE=$(curl -s -X POST "$(JF_URL)/access/api/v1/oidc/token" \
+        -H "Content-Type: application/json" \
+        -d "{\"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\", \"subject_token_type\": \"urn:ietf:params:oauth:token-type:id_token\", \"subject_token\": \"$ID_TOKEN\", \"provider_name\": \"$(JF_OIDC_PROVIDER)\"}")
+      JF_TOKEN=$(echo "$JF_RESPONSE" | jq -r '.access_token')
+
+      if [ -z "$JF_TOKEN" ] || [ "$JF_TOKEN" == "null" ]; then
+        echo "❌ JFrog Auth Failed. Please check if your Identity Mapping 'sub' claim matches."
+        echo "Response from JFrog: $JF_RESPONSE"
+        exit 1
+      fi
+
+      echo "--- 4. Final Download ---"
+      # The complete curl command to fetch your zip file
+      curl -H "Authorization: Bearer $JF_TOKEN" \
+           -L "$(JF_URL)/artifactory/$(REPO_PATH)" \
+           --output "$(LOCAL_FILE_NAME)"
+
+      echo "✅ Download successful!"
+      ls -lh "$(LOCAL_FILE_NAME)"
